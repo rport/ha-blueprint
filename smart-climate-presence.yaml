@@ -18,9 +18,9 @@ blueprint:
     You can track updates and find more blueprints in the [GitHub Repository](https://github.com/rport/ha-blueprint/tree/main).
 
     ### 🚀 Features:
-    - **Manual-On Protection:** Never turns the device on automatically; only steps in as a safety net to turn it off.
-    - **Thermostat-Safe:** Works flawlessly with heaters that cycle their current draw automatically.
-    - **Debounced Slider:** Enforces a safe 5-minute minimum increment delay to avoid ghosting cutoffs.
+    **Manual-On Protection:** Never turns the device on automatically; only steps in as a safety net to turn it off.
+    **Thermostat-Safe:** Works flawlessly with heaters that cycle their current draw automatically.
+    **Debounced Slider:** Enforces a safe 5-minute minimum increment delay to avoid ghosting cutoffs.
   
   homeassistant:
     min_version: "2024.10.0"

@@ -1,8 +1,6 @@
 blueprint:
-  name: 🔌 Smart Climate Switch Control V1
-  homeassistant:
-    min_version: "2024.10.0"
-  description: Turns on a climate appliance switch (heater, cooler, fan) when a room is occupied, checking customizable multi-user presence rules. Includes an optional wattage-based fail-safe loop to verify operation and prevent idle electrical hazards.  Version 1.0
+  name: 🔌 Smart Climate with Occupancy Control V1.1
+  description: Turns on a climate appliance switch (heater, cooler, fan) when a room is occupied, checking customisable multi-user presence rules. Features an optional wattage-based fail-safe loop and a presence-based auto-off safety timeout with a manual override toggle.
   domain: automation
   input:
     climate_switch:
@@ -39,6 +37,22 @@ blueprint:
               value: "any"
             - label: All users are home
               value: "all"
+    vacancy_timeout:
+      name: Vacancy Timeout (Auto-Off Delay)
+      description: How long the appliance is allowed to run in an empty room before the automation forces a safety shutdown.
+      default:
+        minutes: 20
+      selector:
+        duration:
+    override_switch:
+      name: Override Safety Timeout Helper (Optional)
+      description: An optional input_boolean/toggle helper entity. When turned ON, it stops the vacancy auto-off countdown completely.
+      default: []
+      selector:
+        entity:
+          filter:
+            - domain: input_boolean
+            - domain: switch
     power_sensor:
       name: Power Sensor (Optional)
       description: The power entity of your smart plug (measuring Watts) used to run the fail-safe logic. Leave empty if your plug doesn't monitor power.
@@ -66,6 +80,14 @@ blueprint:
       selector:
         text:
 
+# Top-level variables required to securely feed inputs into Jinja triggers
+trigger_variables:
+  power_sensor_var: !input power_sensor
+  climate_switch_var: !input climate_switch
+  power_threshold_var: !input power_threshold
+  presence_sensor_var: !input presence_sensor
+  override_switch_var: !input override_switch
+
 mode: restart
 
 trigger:
@@ -75,19 +97,25 @@ trigger:
   - trigger: state
     entity_id: !input assigned_user
     id: user_change
-  # Safe fail-safe trigger tracking if operational power drops unexpectedly while active
+  # Trigger loop tracking if operational power drops unexpectedly while active
   - trigger: template
     value_template: >
-      {% set p_sensor = !input power_sensor %}
-      {% set p_switch = !input climate_switch %}
-      {% if p_sensor != none and p_sensor != [] and p_sensor != '' %}
-        {{ is_state(p_switch, 'on') and states(p_sensor) | float(0) < (!input power_threshold | float) }}
+      {% if power_sensor_var != none and power_sensor_var != [] and power_sensor_var != '' %}
+        {{ is_state(climate_switch_var, 'on') and states(power_sensor_var) | float(0) < (power_threshold_var | float(0)) }}
       {% else %}
         {{ false }}
       {% endif %}
     for:
       minutes: 2
     id: power_dropped
+  # Trigger loop tracking if device runs inside an empty room past the timeout
+  - trigger: template
+    value_template: >
+      {% set ov = override_switch_var %}
+      {% set override_active = (ov != none and ov != [] and ov != '' and is_state(ov, 'on')) %}
+      {{ is_state(climate_switch_var, 'on') and is_state(presence_sensor_var, 'off') and not override_active }}
+    for: !input vacancy_timeout
+    id: vacancy_timeout_reached
 
 condition: []
 
@@ -101,7 +129,7 @@ action:
       p_threshold: !input power_threshold
       notify_service: !input notification_service
       
-      # Determine if user presence matches configured rule
+      # Process geolocation boundaries for listed personnel
       total_users: "{{ user_list | count }}"
       home_users: "{{ user_list | expand | selectattr('state', 'eq', 'home') | list | count }}"
       users_ok: >
@@ -111,11 +139,11 @@ action:
           {{ home_users | int == total_users | int }}
         {% endif %}
 
-      # Master operational rule
+      # Master ruleset parameters
       should_be_on: "{{ is_state(presence, 'on') and users_ok }}"
 
   - choose:
-      # CONDITION 1: Appliance unexpectedly dropped below active power load while running
+      # ACTION 1: Wattage load dropped unexpectedly while device switch was active
       - conditions:
           - condition: template
             value_template: "{{ trigger.id == 'power_dropped' and is_state(appliance, 'on') }}"
@@ -128,7 +156,20 @@ action:
               title: "⚠️ Appliance Operation Failure"
               message: "The climate switch was shut off because the appliance stopped drawing power while running."
 
-      # CONDITION 2: Environment demands activation, switch is currently off
+      # ACTION 2: Vacancy safety timeout reached without override protection active
+      - conditions:
+          - condition: template
+            value_template: "{{ trigger.id == 'vacancy_timeout_reached' and is_state(appliance, 'on') }}"
+        sequence:
+          - action: switch.turn_off
+            target:
+              entity_id: !input climate_switch
+          - action: "{{ notify_service }}"
+            data:
+              title: "🛑 Safety Auto-Off Activated"
+              message: "The climate switch was turned off automatically because the room remained empty."
+
+      # ACTION 3: Presence detected and target users are verified home
       - conditions:
           - condition: template
             value_template: "{{ should_be_on and is_state(appliance, 'off') }}"
@@ -137,19 +178,16 @@ action:
             target:
               entity_id: !input climate_switch
           
-          # Branch based on whether a power monitoring entity exists
           - if:
               - condition: template
                 value_template: "{{ power_entity != none and power_entity != [] and power_entity != '' }}"
             then:
-              # Wait up to 1 minute for the power draw to cross the operational minimum threshold
               - wait_for_trigger:
                   - trigger: template
                     value_template: "{{ states(power_entity) | float(0) >= p_threshold | float }}"
                 timeout:
                   minutes: 1
               - choose:
-                  # If the timer expires without power changing, turn the smart plug off (Fail-Safe)
                   - conditions:
                       - condition: template
                         value_template: "{{ wait.trigger == none }}"
@@ -160,24 +198,22 @@ action:
                       - action: "{{ notify_service }}"
                         data:
                           title: "🚨 Climate Fail-Safe Tripped"
-                          message: "The smart plug turned on, but the appliance drawn 0W. Shutting down switch to protect components."
+                          message: "The smart plug turned on, but the appliance drew 0W. Shutting down switch to protect components."
                 default:
-                  # Power verified successfully
                   - action: "{{ notify_service }}"
                     data:
                       title: "💨 Climate Appliance Activated"
                       message: "The device is verified active and running at {{ states(power_entity) }}W."
             else:
-              # No power sensor attached; notify immediately
               - action: "{{ notify_service }}"
-                data:
-                  title: "💨 Climate Appliance Activated"
-                  message: "The device has been turned on because you are in the room."
+                    data:
+                      title: "💨 Climate Appliance Activated"
+                      message: "The device has been turned on because you are in the room."
 
-      # CONDITION 3: Room is vacant or users are away, switch is running
+      # ACTION 4: Core master users left home entirely (Instant forced structural shutdown)
       - conditions:
           - condition: template
-            value_template: "{{ not should_be_on and is_state(appliance, 'on') }}"
+            value_template: "{{ not users_ok and is_state(appliance, 'on') }}"
         sequence:
           - action: switch.turn_off
             target:
@@ -185,4 +221,4 @@ action:
           - action: "{{ notify_service }}"
             data:
               title: "🛑 Climate Appliance Deactivated"
-              message: "The device has been turned off due to vacancy or user absence."
+              message: "The device was turned off immediately because the assigned users left home."

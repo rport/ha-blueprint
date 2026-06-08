@@ -1,5 +1,5 @@
 blueprint:
-  name: 🔌 Smart Climate with Occupancy Control v1.5
+  name: 🔌 Smart Climate with Occupancy Control v1.6
   description: Automatically controls a climate appliance based on room occupancy, native time/day schedules, and user proximity configurations. Features a power fail-safe loop, a presence auto-off timeout, and a manual override toggle.
   domain: automation
   input:
@@ -74,7 +74,7 @@ blueprint:
     proximity_sensor:
       name: Proximity Device (Optional)
       description: Select the Home Assistant Proximity Integration Device tracking your target home zone. Used for pre-heating/cooling.
-      default: []
+      default: ""
       selector:
         device:
           integration: proximity
@@ -163,10 +163,10 @@ trigger:
   # Trigger when proximity matches target preconditions
   - trigger: template
     value_template: >
-      {% if proximity_device_var != none and proximity_device_var != [] and proximity_device_var != '' %}
+      {% if proximity_device_var is string and proximity_device_var | length > 0 %}
         {% set ents = device_entities(proximity_device_var) %}
-        {% set dist_ent = expand(ents) | selectattr('attributes.device_class', 'defined') | selectattr('attributes.device_class', 'eq', 'distance') | map(attribute='entity_id') | first | default('') %}
-        {% set dir_ent = expand(ents) | selectattr('state', 'in', ['towards', 'away', 'stationary', 'arrived', 'unknown']) | map(attribute='entity_id') | first | default('') %}
+        {% set dist_ent = ents | select('search', '_distance') | first | default('') %}
+        {% set dir_ent = ents | select('search', '_direction_of_travel') | first | default('') %}
         {% if dist_ent != '' and dir_ent != '' %}
           {{ states(dist_ent) | float(99999) <= (proximity_threshold_var | float(2000)) and states(dir_ent) == 'towards' }}
         {% else %}
@@ -179,10 +179,10 @@ trigger:
   # Trigger when proximity clears out of target preconditions
   - trigger: template
     value_template: >
-      {% if proximity_device_var != none and proximity_device_var != [] and proximity_device_var != '' %}
+      {% if proximity_device_var is string and proximity_device_var | length > 0 %}
         {% set ents = device_entities(proximity_device_var) %}
-        {% set dist_ent = expand(ents) | selectattr('attributes.device_class', 'defined') | selectattr('attributes.device_class', 'eq', 'distance') | map(attribute='entity_id') | first | default('') %}
-        {% set dir_ent = expand(ents) | selectattr('state', 'in', ['towards', 'away', 'stationary', 'arrived', 'unknown']) | map(attribute='entity_id') | first | default('') %}
+        {% set dist_ent = ents | select('search', '_distance') | first | default('') %}
+        {% set dir_ent = ents | select('search', '_direction_of_travel') | first | default('') %}
         {% if dist_ent != '' and dir_ent != '' %}
           {{ not (states(dist_ent) | float(99999) <= (proximity_threshold_var | float(2000)) and states(dir_ent) == 'towards') }}
         {% else %}
@@ -239,15 +239,15 @@ action:
 
       # Extract proximity entities from the selected proximity device dynamically
       prox_entities: >
-        {% if prox_device != none and prox_device != [] and prox_device != '' %}
+        {% if prox_device is string and prox_device | length > 0 %}
           {{ device_entities(prox_device) }}
         {% else %}
           []
         {% endif %}
       prox_dist_entity: >
-        {{ expand(prox_entities) | selectattr('attributes.device_class', 'defined') | selectattr('attributes.device_class', 'eq', 'distance') | map(attribute='entity_id') | first | default('') }}
+        {{ prox_entities | select('search', '_distance') | first | default('') }}
       prox_dir_entity: >
-        {{ expand(prox_entities) | selectattr('state', 'in', ['towards', 'away', 'stationary', 'arrived', 'unknown']) | map(attribute='entity_id') | first | default('') }}
+        {{ prox_entities | select('search', '_direction_of_travel') | first | default('') }}
 
       # Check individual user location criteria (Home OR Approaching via proximity parameters)
       total_users: "{{ user_list | count }}"

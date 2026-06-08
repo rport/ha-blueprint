@@ -37,13 +37,17 @@ blueprint:
               value: "any"
             - label: All users are home
               value: "all"
-    vacancy_timeout:
-      name: Vacancy Timeout (Auto-Off Delay)
-      description: How long the appliance is allowed to run in an empty room before the automation forces a safety shutdown.
-      default:
-        minutes: 20
+    vacancy_timeout_minutes:
+      name: Vacancy Timeout (Minutes)
+      description: How many minutes the appliance can run in an empty room before forcing a safety shutdown. Steps by 10 minutes starting from 5 (5, 15, 25, 35...).
+      default: 25
       selector:
-        duration:
+        number:
+          min: 5
+          max: 120
+          step: 10
+          mode: slider
+          unit_of_measurement: min
     override_switch:
       name: Override Safety Timeout Helper (Optional)
       description: Input_boolean toggle. Turning this ON completely disables the empty room auto-off countdown.
@@ -65,6 +69,7 @@ trigger_variables:
   climate_switch_var: !input climate_switch
   presence_sensor_var: !input presence_sensor
   override_switch_var: !input override_switch
+  vacancy_timeout_minutes_var: !input vacancy_timeout_minutes
 
 mode: restart
 
@@ -85,7 +90,8 @@ trigger:
       {% set ov = override_switch_var %}
       {% set override_active = (ov != none and ov != [] and ov != '' and is_state(ov, 'on')) %}
       {{ is_state(climate_switch_var, 'on') and is_state(presence_sensor_var, 'off') and not override_active }}
-    for: !input vacancy_timeout
+    for:
+      minutes: "{{ vacancy_timeout_minutes_var | int }}"
     id: vacancy_timeout_reached
 
 condition: []

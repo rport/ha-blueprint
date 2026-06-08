@@ -1,6 +1,6 @@
 blueprint:
   name: 🔌 Smart Climate Occupancy Safety Cutoff
-  description: Monitors a manually activated climate switch (heater, cooler, fan) and automatically turns it off based on room vacancy, user absence, or an optional power-monitoring fail-safe.
+  description: Monitors a manually activated climate switch (heater, cooler, fan) and automatically turns it off based on room vacancy or user absence. Completely safe for appliances with built-in thermostats.
   domain: automation
   input:
     climate_switch:
@@ -53,26 +53,6 @@ blueprint:
           filter:
             - domain: input_boolean
             - domain: switch
-    power_sensor:
-      name: Power Sensor (Optional)
-      description: Wattage tracking entity used for the fail-safe operational check. Leave empty if your plug doesn't monitor power.
-      default: []
-      selector:
-        entity:
-          filter:
-            - domain: sensor
-              device_class: power
-    power_threshold:
-      name: Power Threshold (Watts)
-      description: Minimum running wattage to confirm the appliance is working. If the switch is turned on but stays below this for 2 minutes, it shuts down.
-      default: 10
-      selector:
-        number:
-          min: 0
-          max: 4000
-          step: 1
-          unit_of_measurement: W
-          mode: box
     notify_device:
       name: Notification Device
       description: Mobile app instance that will receive safety shutdown push alerts.
@@ -82,9 +62,7 @@ blueprint:
 
 # Top-level variables safely forwarding configurations directly into Jinja templates
 trigger_variables:
-  power_sensor_var: !input power_sensor
   climate_switch_var: !input climate_switch
-  power_threshold_var: !input power_threshold
   presence_sensor_var: !input presence_sensor
   override_switch_var: !input override_switch
 
@@ -94,17 +72,13 @@ trigger:
   - trigger: state
     entity_id: !input assigned_user
     id: user_change
-  # Triggers if switch is ON but power draw fails or drops out for 2 continuous minutes
-  - trigger: template
-    value_template: >
-      {% if power_sensor_var != none and power_sensor_var != [] and power_sensor_var != '' %}
-        {{ is_state(climate_switch_var, 'on') and states(power_sensor_var) | float(0) < (power_threshold_var | float(0)) }}
-      {% else %}
-        {{ false }}
-      {% endif %}
-    for:
-      minutes: 2
-    id: power_dropped
+  - trigger: state
+    entity_id: !input presence_sensor
+    id: presence_change
+  - trigger: state
+    entity_id: !input climate_switch
+    to: "on"
+    id: switch_turned_on
   # Triggers if switch is ON, room is empty, and override is off for the timeout duration
   - trigger: template
     value_template: >
@@ -133,10 +107,10 @@ action:
         {% endif %}
 
   - choose:
-      # ACTION 1: Wattage fail-safe triggered (Appliance element turned off or failed at startup)
+      # ACTION 1: Target users are away from home while device is running (Forced Instant Shutdown)
       - conditions:
           - condition: template
-            value_template: "{{ trigger.id == 'power_dropped' and is_state(appliance, 'on') }}"
+            value_template: "{{ not users_ok and is_state(appliance, 'on') }}"
         sequence:
           - action: switch.turn_off
             target:
@@ -144,8 +118,8 @@ action:
           - device_id: !input notify_device
             domain: mobile_app
             type: notify
-            title: "⚠️ Appliance Safety Shutdown"
-            message: "The climate switch was turned off because it failed to draw sufficient power while active."
+            title: "🛑 Absence Auto-Off"
+            message: "The climate switch was turned off because the assigned users are away from home."
             data:
               group: smart_climate_control
 
@@ -162,21 +136,5 @@ action:
             type: notify
             title: "🛑 Vacancy Auto-Off"
             message: "The climate switch was turned off automatically because the room has been empty."
-            data:
-              group: smart_climate_control
-
-      # ACTION 3: Target users left home entirely while device was running
-      - conditions:
-          - condition: template
-            value_template: "{{ trigger.id == 'user_change' and not users_ok and is_state(appliance, 'on') }}"
-        sequence:
-          - action: switch.turn_off
-            target:
-              entity_id: !input climate_switch
-          - device_id: !input notify_device
-            domain: mobile_app
-            type: notify
-            title: "🛑 Absence Auto-Off"
-            message: "The climate switch was turned off because the assigned users left home."
             data:
               group: smart_climate_control

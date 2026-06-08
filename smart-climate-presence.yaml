@@ -1,0 +1,170 @@
+# Blueprint Name: Smart Climate + Occupancy
+# Version: 1.0.0
+# Author: rport
+# Source: https://github.com/rport/ha-blueprint/blob/main/smart-climate-presence.yaml
+# Minimum Home Assistant Version: 2024.10.0
+
+blueprint:
+  name: 🔌 Smart Climate + Occupancy
+  description: >
+    # 🔌 Smart Climate + Occupancy
+    **Version: 1.0.0**
+
+    Monitors a manually activated climate switch (heater, cooler, fan) and automatically turns it off based on room vacancy or user absence. 
+    
+    This blueprint is completely safe for appliances with built-in thermostats and features a debounced slider to prevent premature turn-offs.
+
+    ### 📂 Repository:
+    You can track updates and find more blueprints in the [GitHub Repository](https://github.com/rport/ha-blueprint/tree/main).
+
+    ### 🚀 Features:
+    - **Manual-On Protection:** Never turns the device on automatically; only steps in as a safety net to turn it off.
+    - **Thermostat-Safe:** Works flawlessly with heaters that cycle their current draw automatically.
+    - **Debounced Slider:** Enforces a safe 5-minute minimum increment delay to avoid ghosting cutoffs.
+  
+  homeassistant:
+    min_version: "2024.10.0"
+  domain: automation
+  input:
+    climate_switch:
+      name: Climate Appliance Switch
+      description: The smart plug or switch connected to your climate device.
+      selector:
+        entity:
+          filter:
+            - domain: switch
+    presence_sensor:
+      name: Room Presence Sensor
+      description: Occupancy or motion sensor for the specific room.
+      selector:
+        entity:
+          filter:
+            - domain: binary_sensor
+              device_class: occupancy
+    assigned_user:
+      name: Assigned Users
+      description: The person or people tied to this climate zone. If they leave home entirely, the running appliance shuts off instantly.
+      selector:
+        entity:
+          filter:
+            - domain: person
+          multiple: true
+    user_presence_mode:
+      name: User Presence Match Rule
+      description: "Any: Stays on if at least one selected user is home. All: Requires everyone selected to be home."
+      default: "any"
+      selector:
+        select:
+          options:
+            - label: Any user is home
+              value: "any"
+            - label: All users are home
+              value: "all"
+    vacancy_timeout_minutes:
+      name: Vacancy Timeout (Minutes)
+      description: How many minutes the appliance can run in an empty room before forcing a safety shutdown. Increments by 5 minutes to prevent premature ghosting cutoffs. Set to 0 to disable (Never turn off).
+      default: 20
+      selector:
+        number:
+          min: 0
+          max: 60
+          step: 5
+          mode: slider
+          unit_of_measurement: min
+    override_switch:
+      name: Override Safety Timeout Helper (Optional)
+      description: Input_boolean toggle. Turning this ON completely disables the empty room auto-off countdown.
+      default: []
+      selector:
+        entity:
+          filter:
+            - domain: input_boolean
+            - domain: switch
+    notify_device:
+      name: Notification Device
+      description: Mobile app instance that will receive safety shutdown push alerts.
+      selector:
+        device:
+          integration: mobile_app
+
+# Top-level variables safely forwarding configurations directly into Jinja templates
+trigger_variables:
+  climate_switch_var: !input climate_switch
+  presence_sensor_var: !input presence_sensor
+  override_switch_var: !input override_switch
+  vacancy_timeout_minutes_var: !input vacancy_timeout_minutes
+
+mode: restart
+
+trigger:
+  - trigger: state
+    entity_id: !input assigned_user
+    id: user_change
+  - trigger: state
+    entity_id: !input presence_sensor
+    id: presence_change
+  - trigger: state
+    entity_id: !input climate_switch
+    to: "on"
+    id: switch_turned_on
+  # Triggers if switch is ON, room is empty, override is off, and timeout tracking is enabled (>0)
+  - trigger: template
+    value_template: >
+      {% set ov = override_switch_var %}
+      {% set override_active = (ov != none and ov != [] and ov != '' and is_state(ov, 'on')) %}
+      {% set timeout_enabled = (vacancy_timeout_minutes_var | int > 0) %}
+      {{ is_state(climate_switch_var, 'on') and is_state(presence_sensor_var, 'off') and not override_active and timeout_enabled }}
+    for:
+      minutes: "{{ vacancy_timeout_minutes_var | int if vacancy_timeout_minutes_var | int > 0 else 1 }}"
+    id: vacancy_timeout_reached
+
+condition: []
+
+action:
+  - variables:
+      appliance: !input climate_switch
+      user_list: !input assigned_user
+      presence_mode: !input user_presence_mode
+      
+      # Process geolocation boundaries for listed personnel
+      total_users: "{{ user_list | count }}"
+      home_users: "{{ user_list | expand | selectattr('state', 'eq', 'home') | list | count }}"
+      users_ok: >
+        {% if presence_mode == 'any' %}
+          {{ home_users | int > 0 }}
+        {% else %}
+          {{ home_users | int == total_users | int }}
+        {% endif %}
+
+  - choose:
+      # ACTION 1: Target users are away from home while device is running (Forced Instant Shutdown)
+      - conditions:
+          - condition: template
+            value_template: "{{ not users_ok and is_state(appliance, 'on') }}"
+        sequence:
+          - action: switch.turn_off
+            target:
+              entity_id: !input climate_switch
+          - device_id: !input notify_device
+            domain: mobile_app
+            type: notify
+            title: "🛑 Absence Auto-Off"
+            message: "The climate switch was turned off because the assigned users are away from home."
+            data:
+              group: smart_climate_control
+
+      # ACTION 2: Empty room safety timeout reached
+      - conditions:
+          - condition: template
+            value_template: "{{ trigger.id == 'vacancy_timeout_reached' and is_state(appliance, 'on') }}"
+        sequence:
+          - action: switch.turn_off
+            target:
+              entity_id: !input climate_switch
+          - device_id: !input notify_device
+            domain: mobile_app
+            type: notify
+            title: "🛑 Vacancy Auto-Off"
+            message: "The climate switch was turned off automatically because the room has been empty."
+            data:
+              group: smart_climate_control

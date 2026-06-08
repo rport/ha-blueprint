@@ -1,6 +1,6 @@
 blueprint:
-  name: 🔌 Smart Climate with Occupancy Control v1.4
-  description: Automatically controls a climate appliance based on room occupancy, native time/day schedules, and user proximity. Features a power fail-safe loop, a presence auto-off timeout, and a manual override toggle.
+  name: 🔌 Smart Climate with Occupancy Control v1.5
+  description: Automatically controls a climate appliance based on room occupancy, native time/day schedules, and user proximity configurations. Features a power fail-safe loop, a presence auto-off timeout, and a manual override toggle.
   domain: automation
   input:
     climate_switch:
@@ -72,13 +72,12 @@ blueprint:
             - label: Sunday
               value: Sun
     proximity_sensor:
-      name: Proximity Entity (Optional)
-      description: Home Assistant Proximity entity tracking distance to home (e.g., proximity.home). Used for pre-heating/cooling.
+      name: Proximity Device (Optional)
+      description: Select the Home Assistant Proximity Integration Device tracking your target home zone. Used for pre-heating/cooling.
       default: []
       selector:
-        entity:
-          filter:
-            - domain: proximity
+        device:
+          integration: proximity
     proximity_threshold:
       name: Proximity Distance Threshold
       description: Max distance from home allowed to trigger pre-heating/cooling when traveling toward home.
@@ -140,7 +139,8 @@ trigger_variables:
   power_threshold_var: !input power_threshold
   presence_sensor_var: !input presence_sensor
   override_switch_var: !input override_switch
-  proximity_sensor_var: !input proximity_sensor
+  proximity_device_var: !input proximity_sensor
+  proximity_threshold_var: !input proximity_threshold
   start_time_var: !input start_time
   end_time_var: !input end_time
   schedule_days_var: !input schedule_days
@@ -160,9 +160,38 @@ trigger:
   - trigger: time
     at: !input end_time
     id: schedule_end
-  - trigger: state
-    entity_id: !input proximity_sensor
-    id: proximity_change
+  # Trigger when proximity matches target preconditions
+  - trigger: template
+    value_template: >
+      {% if proximity_device_var != none and proximity_device_var != [] and proximity_device_var != '' %}
+        {% set ents = device_entities(proximity_device_var) %}
+        {% set dist_ent = expand(ents) | selectattr('attributes.device_class', 'defined') | selectattr('attributes.device_class', 'eq', 'distance') | map(attribute='entity_id') | first | default('') %}
+        {% set dir_ent = expand(ents) | selectattr('state', 'in', ['towards', 'away', 'stationary', 'arrived', 'unknown']) | map(attribute='entity_id') | first | default('') %}
+        {% if dist_ent != '' and dir_ent != '' %}
+          {{ states(dist_ent) | float(99999) <= (proximity_threshold_var | float(2000)) and states(dir_ent) == 'towards' }}
+        {% else %}
+          {{ false }}
+        {% endif %}
+      {% else %}
+        {{ false }}
+      {% endif %}
+    id: proximity_on
+  # Trigger when proximity clears out of target preconditions
+  - trigger: template
+    value_template: >
+      {% if proximity_device_var != none and proximity_device_var != [] and proximity_device_var != '' %}
+        {% set ents = device_entities(proximity_device_var) %}
+        {% set dist_ent = expand(ents) | selectattr('attributes.device_class', 'defined') | selectattr('attributes.device_class', 'eq', 'distance') | map(attribute='entity_id') | first | default('') %}
+        {% set dir_ent = expand(ents) | selectattr('state', 'in', ['towards', 'away', 'stationary', 'arrived', 'unknown']) | map(attribute='entity_id') | first | default('') %}
+        {% if dist_ent != '' and dir_ent != '' %}
+          {{ not (states(dist_ent) | float(99999) <= (proximity_threshold_var | float(2000)) and states(dir_ent) == 'towards') }}
+        {% else %}
+          {{ false }}
+        {% endif %}
+      {% else %}
+        {{ false }}
+      {% endif %}
+    id: proximity_off
   # Operational wattage dropped unexpectedly while active trigger
   - trigger: template
     value_template: >
@@ -193,7 +222,7 @@ action:
       presence_mode: !input user_presence_mode
       power_entity: !input power_sensor
       p_threshold: !input power_threshold
-      prox_entity: !input proximity_sensor
+      prox_device: !input proximity_sensor
       prox_max: !input proximity_threshold
       
       # Native Embedded Schedule Assessment Math
@@ -208,6 +237,18 @@ action:
         {% endif %}
       schedule_active: "{{ day_match and time_match }}"
 
+      # Extract proximity entities from the selected proximity device dynamically
+      prox_entities: >
+        {% if prox_device != none and prox_device != [] and prox_device != '' %}
+          {{ device_entities(prox_device) }}
+        {% else %}
+          []
+        {% endif %}
+      prox_dist_entity: >
+        {{ expand(prox_entities) | selectattr('attributes.device_class', 'defined') | selectattr('attributes.device_class', 'eq', 'distance') | map(attribute='entity_id') | first | default('') }}
+      prox_dir_entity: >
+        {{ expand(prox_entities) | selectattr('state', 'in', ['towards', 'away', 'stationary', 'arrived', 'unknown']) | map(attribute='entity_id') | first | default('') }}
+
       # Check individual user location criteria (Home OR Approaching via proximity parameters)
       total_users: "{{ user_list | count }}"
       matching_users: >
@@ -215,9 +256,9 @@ action:
         {% for u in user_list %}
           {% set is_home = is_state(u, 'home') %}
           {% set is_prox = false %}
-          {% if prox_entity != none and prox_entity != [] and prox_entity != '' %}
-            {% set dist = states(prox_entity) | float(99999) %}
-            {% set dir = state_attr(prox_entity, 'dir_of_travel') | default('') %}
+          {% if prox_dist_entity != '' and prox_dir_entity != '' %}
+            {% set dist = states(prox_dist_entity) | float(99999) %}
+            {% set dir = states(prox_dir_entity) %}
             {% set is_prox = (dist <= prox_max | float and dir == 'towards') %}
           {% endif %}
           {% if is_home or is_prox %}
@@ -236,9 +277,9 @@ action:
       # Pre-heating/cooling check: Schedule is active, user is nearby/home, but room is vacant
       pre_operating: >
         {% set prox_triggered = false %}
-        {% if prox_entity != none and prox_entity != [] and prox_entity != '' %}
-          {% set dist = states(prox_entity) | float(99999) %}
-          {% set dir = state_attr(prox_entity, 'dir_of_travel') | default('') %}
+        {% if prox_dist_entity != '' and prox_dir_entity != '' %}
+          {% set dist = states(prox_dist_entity) | float(99999) %}
+          {% set dir = states(prox_dir_entity) %}
           {% set prox_triggered = (dist <= prox_max | float and dir == 'towards') %}
         {% endif %}
         {{ schedule_active and users_ok and (is_state(presence, 'off') and prox_triggered) }}

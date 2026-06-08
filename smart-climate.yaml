@@ -1,6 +1,6 @@
 blueprint:
-  name: 🔌 Smart Climate with Occupancy Control V1.1
-  description: Turns on a climate appliance switch (heater, cooler, fan) when a room is occupied, checking customisable multi-user presence rules. Features an optional wattage-based fail-safe loop and a presence-based auto-off safety timeout with a manual override toggle.
+  name: 🔌 Smart Climate with Occupancy Control V1.2
+  description: Turns on a climate appliance switch (heater, cooler, fan) when a room is occupied, checking customizable multi-user presence rules. Features an optional wattage-based fail-safe loop and a presence-based auto-off safety timeout with a manual override toggle.
   domain: automation
   input:
     climate_switch:
@@ -206,9 +206,9 @@ action:
                       message: "The device is verified active and running at {{ states(power_entity) }}W."
             else:
               - action: "{{ notify_service }}"
-                    data:
-                      title: "💨 Climate Appliance Activated"
-                      message: "The device has been turned on because you are in the room."
+                data:
+                  title: "💨 Climate Appliance Activated"
+                  message: "The device has been turned on because you are in the room."
 
       # ACTION 4: Core master users left home entirely (Instant forced structural shutdown)
       - conditions:
